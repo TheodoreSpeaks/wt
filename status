@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Tree-structured multi-repo status.
+#   worktrees/
+#   ├── <repo>
+#   │   ├── <wt-name> (<branch>)  dev:<N>  PR#<n> <state> <decision> <Nu>
+#   │   │     💬 <last comment>
+#   │   │     > <last ~8 lines of the Claude pane in that tmux window>
+#
+# One GraphQL call (aliased w0..wN) fetches all PR state in one round-trip.
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+command -v gh   >/dev/null || { echo "gh not found"   >&2; exit 1; }
+command -v jq   >/dev/null || { echo "jq not found"   >&2; exit 1; }
+command -v tmux >/dev/null || { echo "tmux not found" >&2; exit 1; }
+
+# --- tmux windows -> worktree toplevels (indexed array: "toplevel\twindow\tpane") ---
+wt_window_rows=()
+while IFS= read -r widx; do
+  claude_pane=""
+  claude_cwd=""
+  while IFS=$'\t' read -r pidx pcmd pcwd; do
+    # Claude CLI pane command shows as its version string like "2.1.118".
+    if [[ "$pcmd" == 2.* ]]; then
+      claude_pane="$pidx"
+      claude_cwd="$pcwd"
+      break
+    fi
+  done < <(tmux list-panes -t "$widx" -F $'#{pane_index}\t#{pane_current_command}\t#{pane_current_path}')
+  [[ -n "$claude_pane" ]] || continue
+  top=$(git -C "$claude_cwd" rev-parse --show-toplevel 2>/dev/null || true)
+  [[ -n "$top" ]] || continue
+  wt_window_rows+=("$top"$'\t'"$widx"$'\t'"$claude_pane")
+done < <(tmux list-windows -a -F '#{window_index}')
+
+lookup_window() {
+  # echo "$widx\t$pane" for a given toplevel path; prints nothing if not found
+  local needle="$1" row
+  for row in "${wt_window_rows[@]}"; do
+    local t="${row%%$'\t'*}"
+    if [[ "$t" == "$needle" ]]; then
+      echo "${row#*$'\t'}"
+      return
+    fi
+  done
+}
+
+# --- canonical repos (dirs with .git under workspace root) ---
+repos=()
+for d in "$HERE"/*/; do
+  d="${d%/}"
+  [[ -d "$d/.git" ]] && repos+=("$d")
+done
+
+# --- flat list of all worktrees: repo_name \t wt_path \t branch \t owner \t repo_ghname ---
+rows=()
+for repo_dir in "${repos[@]}"; do
+  repo_name=$(basename "$repo_dir")
+  url=$(git -C "$repo_dir" remote get-url origin 2>/dev/null || true)
+  [[ -n "$url" ]] || continue
+  if [[ "$url" =~ github\.com[:/]([^/]+)/([^/]+)$ ]]; then
+    owner="${BASH_REMATCH[1]}"
+    repo_ghname="${BASH_REMATCH[2]%.git}"
+  else
+    continue
+  fi
+  while IFS= read -r line; do
+    wtp=$(awk '{print $1}' <<< "$line")
+    br=$(grep -o '\[.*\]' <<< "$line" | tr -d '[]' || true)
+    [[ -z "$br" ]] && continue
+    rows+=("$repo_name"$'\t'"$wtp"$'\t'"$br"$'\t'"$owner"$'\t'"$repo_ghname")
+  done < <(git -C "$repo_dir" worktree list)
+done
+
+# --- one aliased GraphQL query for every worktree branch ---
+query='query {'
+for j in "${!rows[@]}"; do
+  IFS=$'\t' read -r _ _ br ow rg <<< "${rows[j]}"
+  br_esc="${br//\"/\\\"}"
+  query+="
+  w${j}: repository(owner: \"${ow}\", name: \"${rg}\") {
+    pullRequests(headRefName: \"${br_esc}\", first: 1, states: [OPEN, MERGED, CLOSED], orderBy: {field: UPDATED_AT, direction: DESC}) {
+      nodes {
+        number state isDraft reviewDecision
+        comments(last: 1) { nodes { author { login } body createdAt } }
+        reviewThreads(last: 100) { nodes { isResolved } }
+      }
+    }
+  }"
+done
+query+='
+}'
+result=$(gh api graphql -f query="$query")
+
+# --- print tree ---
+echo "worktrees"
+rn_count=${#repos[@]}
+rn_i=0
+for repo_dir in "${repos[@]}"; do
+  rn_i=$((rn_i+1))
+  repo_name=$(basename "$repo_dir")
+  if (( rn_i == rn_count )); then
+    echo "└── $repo_name"
+    repo_prefix="    "
+  else
+    echo "├── $repo_name"
+    repo_prefix="│   "
+  fi
+
+  wt_js=()
+  for j in "${!rows[@]}"; do
+    IFS=$'\t' read -r rn _ <<< "${rows[j]}"
+    [[ "$rn" == "$repo_name" ]] && wt_js+=("$j")
+  done
+  wt_count=${#wt_js[@]}
+  wt_i=0
+  for j in "${wt_js[@]}"; do
+    wt_i=$((wt_i+1))
+    IFS=$'\t' read -r _ wtp br _ _ <<< "${rows[j]}"
+    name=$(basename "$wtp")
+
+    if (( wt_i == wt_count )); then
+      branch_char="└── "
+      child_prefix="${repo_prefix}    "
+    else
+      branch_char="├── "
+      child_prefix="${repo_prefix}│   "
+    fi
+
+    # tmux window mapping
+    window_suffix=""
+    pane_target=""
+    wp=$(lookup_window "$wtp")
+    if [[ -n "$wp" ]]; then
+      IFS=$'\t' read -r wi pi <<< "$wp"
+      window_suffix="  dev:${wi}"
+      pane_target="${wi}.${pi}"
+    fi
+
+    # PR status
+    pr_suffix=""
+    last_comment=""
+    pr=$(jq -c ".data.w${j}.pullRequests.nodes[0] // empty" <<< "$result")
+    if [[ -n "$pr" ]]; then
+      num=$(jq -r '.number' <<<"$pr")
+      state=$(jq -r '.state' <<<"$pr")
+      draft=$(jq -r 'if .isDraft then " draft" else "" end' <<<"$pr")
+      decision=$(jq -r '.reviewDecision // "—"' <<<"$pr")
+      unresolved=$(jq -r '[.reviewThreads.nodes[] | select(.isResolved==false)] | length' <<<"$pr")
+      pr_suffix="  PR#${num} ${state}${draft} ${decision} ${unresolved}u"
+      last_comment=$(jq -r '.comments.nodes[-1] // empty | "💬 @\(.author.login) \(.createdAt|.[0:10]): \(.body|gsub("\n";" ")|.[0:110])"' <<<"$pr")
+    fi
+
+    echo "${repo_prefix}${branch_char}${name} (${br})${window_suffix}${pr_suffix}"
+    [[ -n "$last_comment" ]] && echo "${child_prefix}  ${last_comment}"
+
+    # last ~8 non-noise lines of the Claude pane
+    if [[ -n "$pane_target" ]]; then
+      tmux capture-pane -t "$pane_target" -p -S -80 2>/dev/null \
+        | grep -E '[[:alnum:]]' \
+        | grep -v 'auto mode on' \
+        | grep -v '^[[:space:]]*Tip:' \
+        | tail -8 \
+        | while IFS= read -r ln; do
+            ln="${ln#"${ln%%[![:space:]]*}"}"
+            printf '%s  > %.120s\n' "${child_prefix}" "$ln"
+          done
+    fi
+  done
+done

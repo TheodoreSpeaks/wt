@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+src="${BASH_SOURCE[0]}"
+[[ "$src" = /* ]] || src="$(pwd)/$src"
+while [ -L "$src" ]; do
+  link=$(readlink "$src")
+  if [[ "$link" = /* ]]; then src="$link"; else src="$(cd "$(dirname "$src")" && pwd)/$link"; fi
+done
+SHARED_SCRIPTS_DIR="$(cd "$(dirname "$src")" && pwd)"
+WORKSPACE="$(cd "$SHARED_SCRIPTS_DIR/.." && pwd)"
+. "$SHARED_SCRIPTS_DIR/.lib.sh"
+
+CONFIG="$WORKSPACE/wt-config.yaml"
+
+[[ -f "$CONFIG" ]] || { echo "config not found: $CONFIG" >&2; exit 1; }
+command -v yq >/dev/null || { echo "yq not found (brew install yq)" >&2; exit 1; }
+
+list_repos() { yq -r '.repos | keys | .[]' "$CONFIG"; }
+
+kill_one() {
+  local svc="$1"
+  local dir cmd
+  dir=$(yq -r ".repos.\"$svc\".dir" "$CONFIG")
+  cmd=$(yq -r ".repos.\"$svc\".kill" "$CONFIG")
+  [[ "$dir" != "null" && -n "$dir" ]] || { echo "no dir for: $svc" >&2; return 1; }
+  [[ "$cmd" != "null" && -n "$cmd" ]] || { echo "no kill command for: $svc" >&2; return 1; }
+  echo "[kill $svc]"
+  ( cd "$WORKSPACE/$dir" && bash -c "$cmd" )
+}
+
+usage() {
+  echo "usage: $(basename "$0") [<repo>|all]   (omit when run from inside a registered repo's worktree or canonical)" >&2
+  echo "available: $(list_repos | tr '\n' ' ') all" >&2
+  exit 1
+}
+
+arg="${1:-}"
+if [[ -z "$arg" ]]; then
+  arg=$(detect_repo_from_cwd "$WORKSPACE") || { echo "could not detect repo from cwd" >&2; usage; }
+fi
+
+case "$arg" in
+  all)
+    while read -r r; do kill_one "$r"; done < <(list_repos)
+    ;;
+  *)
+    list_repos | grep -qx "$arg" || { echo "unknown repo: $arg" >&2; usage; }
+    kill_one "$arg"
+    ;;
+esac

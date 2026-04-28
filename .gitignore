@@ -1,0 +1,25 @@
+# Canonical repo clones — each is its own git repo, registered via /add-repo
+/sim/
+/copilot/
+/infra/
+
+# Worktrees — created by ./wt <repo> <branch>
+/*-wt/
+
+# Env files — populated locally, contain secrets, never tracked
+/env/*
+!/env/.gitkeep
+
+# Personal repo registry — copy from wt-config.example.yaml on first install,
+# then add your own entries via /add-repo
+/wt-config.yaml
+
+# Personal scratch
+/notes/
+
+# Per-machine state
+/.gh-check-seen
+
+# Claude local permissions (per-machine allowlists; the skills under
+# .claude/skills/ ARE tracked — this just excludes the local settings file)
+/.claude/settings.local.json

@@ -1,0 +1,41 @@
+# wt workspace config — copy this to wt-config.yaml and add your own repos
+# (or just run /wt-add-repo and let it append entries automatically).
+#
+#   repos:    per-repo dev commands for ./run and ./kill
+#   mappings: env/cache symlinks applied on `./wt <repo> <branch>` and `./wt sync`
+#
+# Conventions:
+# - repos.<name>.dir is relative to the workspace root; ./run and ./kill cd there.
+# - mappings.source starting with env/ is relative to the workspace; otherwise
+#   it's relative to the canonical repo (used for things like .turbo caches).
+# - mappings.optional: true silences "source not found" warnings.
+
+repos: {}
+  # Example shape — uncomment and edit, or let /wt-add-repo write this for you.
+  #
+  # myrepo:
+  #   dir: myrepo                  # path under <workspace>/ where the runnable app lives
+  #   run: bun run dev             # bash, executed from `dir` (`./run` cd's there first)
+  #   setup: bun install           # optional — auto-run in worktree's right pane on creation
+  #   kill: |                      # bash, executed from `dir` (kills before each ./run)
+  #     for p in 3000; do
+  #       pids=$(lsof -ti :$p 2>/dev/null)
+  #       if [ -n "$pids" ]; then
+  #         echo "killing :$p ($pids)"
+  #         kill -9 $pids
+  #       else
+  #         echo "nothing on :$p"
+  #       fi
+  #     done
+
+mappings: []
+  # Example — symlink env files / shared caches into every worktree of a repo:
+  #
+  # - repo: myrepo
+  #   source: env/.env-myrepo      # workspace-managed file (touch it after wt-add-repo, fill in values)
+  #   dest: .env                   # path inside each worktree (and canonical) to symlink
+  #
+  # - repo: myrepo
+  #   source: .turbo               # repo-relative source (lives in the canonical)
+  #   dest: .turbo
+  #   optional: true               # silent if source missing

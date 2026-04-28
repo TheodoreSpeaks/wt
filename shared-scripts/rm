@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Remove the worktree this script is invoked from. Wraps `./wt <repo> <branch> --rm`
+# (which `git worktree remove --force`s and then kills the tmux window — in that
+# order, so the script's own suicide doesn't truncate the cleanup).
+
+src="${BASH_SOURCE[0]}"
+[[ "$src" = /* ]] || src="$(pwd)/$src"
+while [ -L "$src" ]; do
+  link=$(readlink "$src")
+  if [[ "$link" = /* ]]; then src="$link"; else src="$(cd "$(dirname "$src")" && pwd)/$link"; fi
+done
+SHARED_SCRIPTS_DIR="$(cd "$(dirname "$src")" && pwd)"
+WORKSPACE="$(cd "$SHARED_SCRIPTS_DIR/.." && pwd)"
+. "$SHARED_SCRIPTS_DIR/.lib.sh"
+
+TOPLEVEL=$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null) || {
+  echo "rm: not inside a git worktree" >&2; exit 1
+}
+
+# Only operate on actual worktrees, never on a canonical repo.
+case "$TOPLEVEL" in
+  "$WORKSPACE"/*-wt/*) ;;
+  *) echo "rm: $TOPLEVEL is not under <repo>-wt/ (refusing to remove canonical repo)" >&2; exit 1 ;;
+esac
+
+REPO=$(detect_repo_from_cwd "$WORKSPACE") || { echo "rm: cannot resolve repo from $TOPLEVEL" >&2; exit 1; }
+BRANCH=$(git -C "$TOPLEVEL" branch --show-current)
+[[ -n "$BRANCH" ]] || { echo "rm: detached HEAD in $TOPLEVEL" >&2; exit 1; }
+
+cd "$WORKSPACE"
+exec "$WORKSPACE/wt" "$REPO" "$BRANCH" --rm

@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve the actual workspace root, even when invoked via a symlink in a worktree.
+src="${BASH_SOURCE[0]}"
+[[ "$src" = /* ]] || src="$(pwd)/$src"
+while [ -L "$src" ]; do
+  link=$(readlink "$src")
+  if [[ "$link" = /* ]]; then src="$link"; else src="$(cd "$(dirname "$src")" && pwd)/$link"; fi
+done
+SHARED_SCRIPTS_DIR="$(cd "$(dirname "$src")" && pwd)"
+WORKSPACE="$(cd "$SHARED_SCRIPTS_DIR/.." && pwd)"
+. "$SHARED_SCRIPTS_DIR/.lib.sh"
+
+CONFIG="$WORKSPACE/wt-config.yaml"
+
+[[ -f "$CONFIG" ]] || { echo "config not found: $CONFIG" >&2; exit 1; }
+command -v yq >/dev/null || { echo "yq not found (brew install yq)" >&2; exit 1; }
+
+list_repos() { yq -r '.repos | keys | .[]' "$CONFIG"; }
+
+usage() {
+  echo "usage: $(basename "$0") [<repo>]   (omit when run from inside a registered repo's worktree or canonical)" >&2
+  echo "available: $(list_repos | tr '\n' ' ')" >&2
+  exit 1
+}
+
+svc="${1:-}"
+detected=$(detect_repo_from_cwd "$WORKSPACE" 2>/dev/null) || true
+
+if [[ -z "$svc" ]]; then
+  [[ -n "$detected" ]] || { echo "could not detect repo from cwd" >&2; usage; }
+  svc="$detected"
+fi
+list_repos | grep -qx "$svc" || { echo "unknown repo: $svc" >&2; usage; }
+
+dir=$(yq -r ".repos.\"$svc\".dir" "$CONFIG")
+cmd=$(yq -r ".repos.\"$svc\".run" "$CONFIG")
+[[ "$dir" != "null" && -n "$dir" ]] || { echo "no dir for: $svc" >&2; exit 1; }
+[[ "$cmd" != "null" && -n "$cmd" ]] || { echo "no run command for: $svc" >&2; exit 1; }
+
+# yaml `dir` is workspace-relative (e.g. "sim", "copilot/copilot"). Strip the
+# leading repo name to get the in-repo subpath, then prepend the cwd's git
+# toplevel so we run inside the worktree (or canonical) we're called from —
+# not always the canonical.
+case "$dir" in
+  "$svc")     subpath="" ;;
+  "$svc"/*)   subpath="${dir#"$svc"/}" ;;
+  *)          subpath="$dir" ;;   # dir doesn't start with the repo name, fall back
+esac
+
+if [[ "$detected" == "$svc" ]]; then
+  target_root=$(git -C "$(pwd)" rev-parse --show-toplevel)
+else
+  target_root="$WORKSPACE/$svc"
+fi
+target="$target_root${subpath:+/$subpath}"
+
+"$SHARED_SCRIPTS_DIR/kill" "$svc" || true
+
+cd "$target"
+echo "[run $svc] (in $target) $cmd"
+exec bash -c "$cmd"
