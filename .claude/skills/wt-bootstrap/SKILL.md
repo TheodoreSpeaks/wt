@@ -1,6 +1,6 @@
 ---
 name: wt-bootstrap
-description: First-time setup wizard for a freshly-cloned wt workspace — collects all decisions up front (which repos, tmux mouse override, yaml conflict), then runs every setup step in one pass with no further questions. Use when the user says "/wt-bootstrap", "bootstrap this workspace", "set up wt", or runs into a "wt-config.yaml not found" error from `./wt`.
+description: First-time setup wizard for a freshly-cloned wt workspace — asks up front which repos to register and whether to apply wt's recommended tmux setup, then runs every step in one pass with no further questions. Use when the user says "/wt-bootstrap", "bootstrap this workspace", "set up wt", or runs into a "wt-config.yaml not found" error from `./wt`.
 ---
 
 # wt-bootstrap — first-time setup wizard
@@ -19,41 +19,26 @@ Resolve the workspace root from this skill's base directory (passed as "Base dir
 WORKSPACE="$(cd "<base-dir>/../../.." && pwd)"
 ```
 
-## Phase 0 — sanity check
-
-Before asking anything, confirm we're actually in a wt workspace:
-
-```bash
-test -f "$WORKSPACE/wt-config.example.yaml" || { echo "no wt-config.example.yaml — is this actually a wt workspace?"; exit 1; }
-test -f "$WORKSPACE/wt"                     || { echo "no wt script — is this actually a wt workspace?"; exit 1; }
-```
-
-If either is missing, surface and stop — likely the wrong dir or a corrupt clone.
-
 ## Phase 1 — collect ALL decisions up front
 
-Inspect state and gather everything we'll need to ask the user **before** doing any work. Combine into a **single** AskUserQuestion (or a single free-form prompt). Don't pepper.
+**Start here.** No sanity checks first — go straight to the questions. If the workspace is broken, Phase 2 will fail loudly and clearly.
 
-State to inspect first:
+Quietly inspect state to know which questions to ask, then ask them all in **one** combined prompt. Don't pepper.
 
 ```bash
-yaml_exists=false
 yaml_has_repos=false
-[ -f "$WORKSPACE/wt-config.yaml" ] && yaml_exists=true
-[ "$yaml_exists" = true ] && [ -n "$(yq -r '.repos | keys | .[]' "$WORKSPACE/wt-config.yaml" 2>/dev/null)" ] && yaml_has_repos=true
-
-mouse_state=$(tmux show -gv mouse 2>/dev/null || echo "unset")
-mouse_in_conf=$(grep -E '^[[:space:]]*set(-option)?[[:space:]]+(-g[[:space:]]+)?mouse[[:space:]]+(on|off)' "$HOME/.tmux.conf" 2>/dev/null || true)
+[ -f "$WORKSPACE/wt-config.yaml" ] && [ -n "$(yq -r '.repos | keys | .[]' "$WORKSPACE/wt-config.yaml" 2>/dev/null)" ] && yaml_has_repos=true
 ```
 
-Then ask the user, in **one** prompt, for whatever decisions are actually needed (skip questions whose answer is already determined):
+In one combined prompt, ask:
 
-- **Which repos to register?** Always ask. Accept git URLs and/or local paths (one per line, comma-separated, whatever — be lenient). Empty / "skip" = no repos this run.
-- **`wt-config.yaml` already has registered repos** (only if `yaml_has_repos=true`): continue and append, or abort?
+1. **Which repos to register?** Always ask. Accept git URLs and/or local paths (one per line, comma-separated, whatever — be lenient). Empty / "skip" = no repos this run.
 
-Tmux config (mouse + active-window highlighting) is **always written** as a wt-managed block in `~/.tmux.conf` — no question needed. Anything the user has after the block in their conf still wins (tmux applies in file order), so they can override.
+2. **Apply wt's recommended tmux setup?** Always ask. Writes a small `# >>> wt-managed` block to `~/.tmux.conf` enabling mouse mode and active-window highlighting (catppuccin-mocha colors). Mouse mode is load-bearing for the wt workflow — scrollback, pane resize, the `Ctrl-b w` window picker. Highlighting makes scanning many open worktrees actually possible. Default: yes. User can override anything by adding lines AFTER the block (tmux applies in file order).
 
-After this prompt: every Yes/No / list answer is captured. **No more interactive questions** for the rest of the flow. If the per-repo inference later hits an ambiguity, **auto-pick the best guess and surface it in Phase 3** for the user to review/edit; don't pause to ask.
+3. **`wt-config.yaml` already has registered repos** — only ask if `yaml_has_repos=true`: continue and append, or abort?
+
+After this prompt: every answer is captured. **No more interactive questions** for the rest of the flow. If per-repo inference in Phase 2 hits an ambiguity, **auto-pick the best guess and surface it in Phase 3** for the user to review/edit; don't pause to ask.
 
 ## Phase 2 — execute everything
 
@@ -76,6 +61,8 @@ mkdir -p "$WORKSPACE/env"
 ```
 
 ### 2c. Configure tmux (mouse + active-window highlighting)
+
+**Skip this step entirely if the user said no in Phase 1.**
 
 Maintain a marker-block in `~/.tmux.conf` that wt owns. Always rewrite the block to the latest content; if the user wants to override anything, they can put it AFTER the block (tmux applies in file order, last wins).
 
