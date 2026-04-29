@@ -34,16 +34,17 @@ That walks you through everything — copies the config template, sets up tmux m
 
 ## Day-to-day
 
+From the workspace root:
+- `./wt <repo> <branch>` — create a worktree + tmux window for a branch
+- `./wt sync` — re-sync shared-scripts and env mappings into every canonical + worktree
+- `./status` — tree view of every worktree, its tmux window, and its PR state
+
 From inside any worktree (or canonical):
 
 - `./run` — start dev server (auto-detects repo from cwd, kills the prior one first)
 - `./kill` — stop dev server
 - `./rm` — remove this worktree (kills tmux window + git worktree remove)
 
-From the workspace root:
-
-- `./wt <repo> <branch>` — create a worktree + tmux window for a branch
-- `./wt sync` — re-sync shared-scripts and env mappings into every canonical + worktree
-- `./status` — tree view of every worktree, its tmux window, and its PR state
+Claude skills
 - `/wt-add-repo` — register another repo
 - `/wt-fork` — spawn a parallel Claude in a new worktree for an isolated task

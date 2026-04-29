@@ -70,6 +70,12 @@ sync_env_mappings_into() {
             source_path="$repo_path/$src"
         fi
         local dest_path="$worktree/$dst"
+        # When syncing the canonical itself (worktree == repo_path), repo-relative
+        # mappings have source_path == dest_path. Linking those would replace the
+        # real file with a symlink to itself ("Too many levels of symbolic links").
+        if [ "$source_path" = "$dest_path" ]; then
+            continue
+        fi
         if [ -e "$source_path" ]; then
             mkdir -p "$(dirname "$dest_path")"
             rm -rf "$dest_path"
